@@ -834,37 +834,87 @@ class LLaVAServerNode(Node):
             try:
                 if self.zmq_sub.poll(100):  # 100ms 超時
                     message = self.zmq_sub.recv_string(zmq.NOBLOCK)
-                    data = json.loads(message)
+                    self.get_logger().info(f'Received ZMQ message: {message}')
+                    
+                    try:
+                        data = json.loads(message)
+                    except json.JSONDecodeError:
+                        self.get_logger().error(f'Failed to parse JSON: {message}')
+                        continue
                     
                     command = data.get('command', '')
                     timestamp = data.get('timestamp', 0)
+                    image_data = data.get('image', None)
                     
-                    if command and self.latest_cv_image is not None:
-                        # 處理命令
-                        detection_result = self.model_worker.detect_object(self.latest_cv_image, command)
-                        annotated_image, grasp_targets = self.annotator.annotate_image(
-                            self.latest_cv_image, detection_result)
+                    self.get_logger().info(f'Processing command: "{command}", has_image: {image_data is not None}')
+                    
+                    if command:
+                        # 獲取影像
+                        current_image = None
                         
-                        # 透過 ZMQ 發送結果
-                        result = {
-                            'command': command,
-                            'timestamp': timestamp,
-                            'targets_found': len(grasp_targets),
-                            'targets': grasp_targets
-                        }
+                        # 優先使用命令中的影像
+                        if image_data:
+                            try:
+                                # 解碼 base64 影像
+                                img_bytes = base64.b64decode(image_data)
+                                img_array = np.frombuffer(img_bytes, np.uint8)
+                                current_image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                                self.get_logger().info(f'Decoded image from command: {current_image.shape}')
+                            except Exception as e:
+                                self.get_logger().error(f'Error decoding image from command: {e}')
                         
-                        self.zmq_pub.send_string(json.dumps(result))
+                        # 備用：使用最新的 ROS 影像
+                        if current_image is None and self.latest_cv_image is not None:
+                            current_image = self.latest_cv_image.copy()
+                            self.get_logger().info(f'Using latest ROS image: {current_image.shape}')
                         
-                        # 也透過 ROS 發布
-                        self.publish_results(annotated_image, grasp_targets, command)
-                        
-                        # 更新圖像供 GUI 使用
-                        self.latest_cv_image = annotated_image
+                        if current_image is not None:
+                            # 處理命令
+                            detection_result = self.model_worker.detect_object(current_image, command)
+                            self.get_logger().info(f'Detection result: {detection_result}')
+                            
+                            annotated_image, grasp_targets = self.annotator.annotate_image(
+                                current_image, detection_result)
+                            
+                            # 將標註圖像編碼為 base64 用於 ZMQ 傳送
+                            _, buffer = cv2.imencode('.jpg', annotated_image)
+                            img_base64 = base64.b64encode(buffer).decode('utf-8')
+                            
+                            # 透過 ZMQ 發送結果
+                            result = {
+                                'command': command,
+                                'timestamp': timestamp,
+                                'targets_found': len(grasp_targets),
+                                'targets': grasp_targets,
+                                'annotated_image': img_base64,
+                                'image_shape': list(annotated_image.shape)
+                            }
+                            
+                            result_json = json.dumps(result)
+                            self.zmq_pub.send_string(result_json)
+                            self.get_logger().info(f'Sent ZMQ result: {len(grasp_targets)} targets found')
+                            
+                            # 也透過 ROS 發布
+                            self.publish_results(annotated_image, grasp_targets, command)
+                            
+                        else:
+                            self.get_logger().warning('No image available for processing')
+                            # 發送錯誤回應
+                            error_result = {
+                                'command': command,
+                                'timestamp': timestamp,
+                                'error': 'No image available',
+                                'targets_found': 0,
+                                'targets': []
+                            }
+                            self.zmq_pub.send_string(json.dumps(error_result))
                         
             except zmq.Again:
                 pass
             except Exception as e:
                 self.get_logger().error(f'Error in command processing loop: {str(e)}')
+                import traceback
+                self.get_logger().error(f'Traceback: {traceback.format_exc()}')
 
 
 def main(args=None):

@@ -133,21 +133,34 @@ class StretchVLAController:
         self.current_state = "idle"  # idle, moving, grasping, error
         self.last_error = ""
         
-        # Control parameters
-        self.approach_distance = 0.1  # Distance to maintain from target (meters)
-        self.grasp_height_offset = 0.05  # Height offset for grasping (meters)
-        self.max_reach_distance = 0.8  # Maximum reach distance (meters)
+        # Control parameters (load from ROS parameters)
+        self.approach_distance = node.get_parameter('robot.approach_distance').get_parameter_value().double_value
+        self.grasp_height_offset = node.get_parameter('robot.grasp_height_offset').get_parameter_value().double_value
+        self.max_reach_distance = node.get_parameter('robot.max_reach_distance').get_parameter_value().double_value
         
         # Target tracking
         self.current_target = None
         self.target_tracking_enabled = False
         self.last_target_time = 0
         
-        # Movement parameters
-        self.base_translate_speed = 0.1  # m/s
-        self.base_rotate_speed = 0.3  # rad/s
-        self.arm_extend_speed = 0.1  # m/s
-        self.lift_speed = 0.1  # m/s
+        # Movement parameters (load from ROS parameters)
+        try:
+            self.base_translate_speed = node.get_parameter('robot.base.max_linear_velocity').get_parameter_value().double_value
+            self.base_rotate_speed = node.get_parameter('robot.base.max_angular_velocity').get_parameter_value().double_value
+            self.arm_extend_speed = node.get_parameter('robot.arm.default_speed').get_parameter_value().double_value
+            self.lift_speed = node.get_parameter('robot.lift.default_speed').get_parameter_value().double_value
+            
+            # Set depth scale
+            depth_scale = node.get_parameter('camera.depth_scale').get_parameter_value().double_value
+            self.coordinate_transformer.depth_scale = depth_scale
+        except Exception as e:
+            node.get_logger().warning(f'Could not load all parameters, using defaults: {e}')
+            # Fallback to default values
+            self.base_translate_speed = 0.1  # m/s
+            self.base_rotate_speed = 0.3  # rad/s
+            self.arm_extend_speed = 0.1  # m/s
+            self.lift_speed = 0.1  # m/s
+            self.coordinate_transformer.depth_scale = 0.001
         
         # Initialize robot connection
         self.connect_to_robot()
@@ -359,10 +372,6 @@ class StretchVLAController:
             
         except Exception as e:
             self.node.get_logger().error(f'Error in movement sequence: {str(e)}')
-            return False
-            self.node.get_logger().error(f'Error moving to home position: {str(e)}')
-            self.current_state = "error"
-            self.last_error = str(e)
             return False
     
     def execute_grasp(self, grasp_target, depth_image=None):
@@ -624,6 +633,23 @@ class StretchVLAController:
 class StretchVLAControlNode(Node):
     def __init__(self):
         super().__init__('stretch_vla_control_node')
+        
+        # Declare parameters with default values
+        self.declare_parameter('robot.max_reach_distance', 0.8)
+        self.declare_parameter('robot.approach_distance', 0.1)
+        self.declare_parameter('robot.grasp_height_offset', 0.05)
+        self.declare_parameter('robot.arm.max_extension', 0.5)
+        self.declare_parameter('robot.arm.default_speed', 0.1)
+        self.declare_parameter('robot.lift.min_height', 0.1)
+        self.declare_parameter('robot.lift.max_height', 1.5)
+        self.declare_parameter('robot.lift.default_speed', 0.1)
+        self.declare_parameter('robot.lift.home_height', 0.6)
+        self.declare_parameter('robot.gripper.open_position', -50)
+        self.declare_parameter('robot.gripper.close_position', 20)
+        self.declare_parameter('robot.gripper.grasp_force', 20)
+        self.declare_parameter('robot.base.max_linear_velocity', 0.5)
+        self.declare_parameter('robot.base.max_angular_velocity', 1.0)
+        self.declare_parameter('camera.depth_scale', 0.001)
         
         # Initialize controller
         self.controller = StretchVLAController(self)

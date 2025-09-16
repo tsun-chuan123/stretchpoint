@@ -2,6 +2,7 @@
 
 import sys
 import os
+import base64
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
@@ -99,12 +100,23 @@ class CommandPublisherThread(QThread):
             }
             
             if image_data is not None:
-                message["image"] = image_data.tolist() if isinstance(image_data, np.ndarray) else image_data
+                # 將 OpenCV 影像編碼為 base64
+                if isinstance(image_data, np.ndarray):
+                    _, buffer = cv2.imencode('.jpg', image_data)
+                    image_base64 = base64.b64encode(buffer).decode('utf-8')
+                    message["image"] = image_base64
+                    print(f"Encoded image: {image_data.shape} -> {len(image_base64)} chars")
+                else:
+                    message["image"] = image_data
             
-            self.pub.send_string(json.dumps(message))
+            message_json = json.dumps(message)
+            self.pub.send_string(message_json)
+            print(f"Published command: {command} (message size: {len(message_json)} chars)")
             
         except Exception as e:
             print(f"Error publishing command: {e}")
+            import traceback
+            traceback.print_exc()
             
     def stop(self):
         try:
