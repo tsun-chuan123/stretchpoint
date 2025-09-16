@@ -46,7 +46,7 @@ colcon*
 ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
-ros2_ws/src/llava_server/
+
 
 # Docker assets
 .dockerignore
@@ -55,3 +55,8 @@ docker/
 # Local maintenance scripts
 fix_symlinks.sh
 fix_symlinks_docker.sh
+
+# VLA-related runtime/docs (do not commit runtime scripts or generated docs)
+README_VLA.md
+start_vla.sh
+start_vla_server.sh
