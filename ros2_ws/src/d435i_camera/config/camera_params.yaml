@@ -1,0 +1,24 @@
+# D435i Camera Configuration
+d435i_camera_node:
+  ros__parameters:
+    camera:
+      width: 640
+      height: 480
+      fps: 30
+      
+      color:
+        format: "bgr8"
+        
+      depth:
+        format: "z16"
+        
+      # Auto exposure settings
+      auto_exposure: true
+      exposure_time: 8500  # microseconds
+      
+      # Other settings
+      enable_auto_white_balance: true
+      brightness: 0
+      contrast: 50
+      saturation: 64
+      sharpness: 50

@@ -1,0 +1,6 @@
+# Execute grasp service
+stretch_interfaces/GraspTarget target
+---
+bool success
+string result_message
+geometry_msgs/Pose final_pose

@@ -1,0 +1,42 @@
+# Robot Control Parameters
+robot:
+  # Reach constraints
+  max_reach_distance: 0.8  # meters
+  approach_distance: 0.1   # distance to maintain from target
+  grasp_height_offset: 0.05  # height offset for grasping
+  
+  # Motion parameters
+  arm:
+    max_extension: 0.5  # meters
+    default_speed: 0.1  # m/s
+    
+  lift:
+    min_height: 0.1     # meters
+    max_height: 1.5     # meters
+    default_speed: 0.1  # m/s
+    home_height: 0.6    # meters
+    
+  gripper:
+    open_position: -50
+    close_position: 20
+    grasp_force: 20
+    
+  base:
+    max_linear_velocity: 0.5   # m/s
+    max_angular_velocity: 1.0  # rad/s
+    
+# Camera parameters
+camera:
+  depth_scale: 0.001  # RealSense depth scale
+  
+# Coordinate transformation parameters
+transforms:
+  camera_to_base:
+    # Camera mounted on robot head transformation matrix
+    # [R|t] format: 4x4 homogeneous transformation
+    matrix: [
+      [0, 0, 1, 0.13],   # Camera X -> Robot Y
+      [-1, 0, 0, 0.0],   # Camera Y -> Robot -X  
+      [0, -1, 0, 1.2],   # Camera Z -> Robot -Z (height adjustment)
+      [0, 0, 0, 1]
+    ]

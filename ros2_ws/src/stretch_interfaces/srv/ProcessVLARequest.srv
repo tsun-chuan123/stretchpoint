@@ -1,0 +1,7 @@
+# Process VLA request service
+string command_text
+sensor_msgs/Image image
+---
+stretch_interfaces/GraspTarget grasp_target
+bool success
+string error_message

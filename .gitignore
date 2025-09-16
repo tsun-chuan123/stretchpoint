@@ -1,0 +1,57 @@
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.*
+
+# Python bytecode and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+# pip
+default.profraw
+pip-wheel-metadata/
+
+# Test / coverage tooling
+.coverage*
+.pytest_cache/
+.mypy_cache/
+ruff_cache/
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Editor settings
+.vscode/
+.idea/
+*.code-workspace
+*~
+*.swp
+
+# ROS 2 and colcon outputs
+.colcon/
+colcon*
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+ros2_ws/src/llava_server/
+
+# Docker assets
+.dockerignore
+docker/
+
+# Local maintenance scripts
+fix_symlinks.sh
+fix_symlinks_docker.sh
