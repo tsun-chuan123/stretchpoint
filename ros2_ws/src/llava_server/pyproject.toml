@@ -3,12 +3,12 @@ requires = ["setuptools>=61.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "llava_server"
+name = "llava-server"
 version = "0.0.0"
 description = "LLaVA server for Stretch3 VLA system"
 readme = "README.md"
 authors = [{name = "stretch_developer", email = "your_email@example.com"}]
-license = {text = "MIT"}
+license = "MIT"
 dependencies = [
     "setuptools",
 ]

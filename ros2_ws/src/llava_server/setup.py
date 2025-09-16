@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 package_name = 'llava_server'
 
 setup(
-    name=package_name,
+    name='llava-server',
     version='0.0.0',
     packages=find_packages(),
     data_files=[
