@@ -178,6 +178,41 @@ class LLaVAModelWorker:
             print(f"Model type: {type(self.model)}")
             print(f"Has vision tower: {hasattr(self.model, 'get_vision_tower')}")
             
+            # 確保 image token 在 tokenizer 中且模型有對應的 embedding
+            if self.tokenizer and DEFAULT_IMAGE_TOKEN not in self.tokenizer.get_vocab():
+                print(f"Adding {DEFAULT_IMAGE_TOKEN} to tokenizer")
+                self.tokenizer.add_tokens([DEFAULT_IMAGE_TOKEN])
+                
+                # 調整模型 embedding 大小
+                if self.model:
+                    print(f"Resizing model embeddings from {self.model.get_input_embeddings().weight.shape[0]} to {len(self.tokenizer)}")
+                    self.model.resize_token_embeddings(len(self.tokenizer))
+            
+            # 檢查 image token ID 並更新全局變數
+            if self.tokenizer and DEFAULT_IMAGE_TOKEN in self.tokenizer.get_vocab():
+                image_token_id = self.tokenizer.convert_tokens_to_ids(DEFAULT_IMAGE_TOKEN)
+                print(f"Image token ID: {image_token_id}")
+                
+                # 更新全局變數
+                global IMAGE_TOKEN_INDEX
+                IMAGE_TOKEN_INDEX = image_token_id
+                print(f"Updated IMAGE_TOKEN_INDEX to: {IMAGE_TOKEN_INDEX}")
+                
+                # 同時更新我們的 mm_utils 模組中的常數
+                try:
+                    import llava_server.mm_utils as local_mm_utils
+                    local_mm_utils.IMAGE_TOKEN_INDEX = image_token_id
+                    print(f"Updated local mm_utils IMAGE_TOKEN_INDEX to: {image_token_id}")
+                except:
+                    pass
+                    
+                try:
+                    import mm_utils as fallback_mm_utils
+                    fallback_mm_utils.IMAGE_TOKEN_INDEX = image_token_id
+                    print(f"Updated fallback mm_utils IMAGE_TOKEN_INDEX to: {image_token_id}")
+                except:
+                    pass
+            
         except Exception as e:
             print(f"Failed to load transformers model: {e}")
             print("Will use simulation mode")
@@ -279,69 +314,103 @@ ASSISTANT: Looking at the image, I can see the {prompt}. The coordinates are: ""
     def generate_with_causal_model(self, img_pil, prompt, image_shape):
         """使用 AutoModelForCausalLM 生成（如 robopoint 模型）"""
         try:
-            # 處理圖像
+            # 確保提示詞包含圖像標記
+            if DEFAULT_IMAGE_TOKEN not in prompt:
+                print(f"Warning: Adding missing image token to prompt")
+                prompt = DEFAULT_IMAGE_TOKEN + "\n" + prompt
+            
+            print(f"Processing prompt: {prompt[:100]}...")
+            
+            # 處理圖像 - 基於 LLaVA model_worker.py 的實現
             if self.image_processor:
                 try:
+                    # 檢查是否需要特殊處理圖像標記
+                    replace_token = DEFAULT_IMAGE_TOKEN
+                    if getattr(self.model.config, 'mm_use_im_start_end', False):
+                        replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
+                    prompt = prompt.replace(DEFAULT_IMAGE_TOKEN, replace_token)
+                    
+                    # 處理圖像為tensor
+                    image_sizes = [img_pil.size]
                     images = process_images([img_pil], self.image_processor, self.model.config)
-                    if isinstance(images, list):
-                        images = [img.to(self.device, dtype=torch.float16) for img in images]
+                    
+                    if type(images) is list:
+                        images = [image.to(self.model.device, dtype=torch.float16) for image in images]
                     else:
-                        images = images.to(self.device, dtype=torch.float16)
+                        images = images.to(self.model.device, dtype=torch.float16)
+                        
                 except Exception as e:
                     print(f"Image processing error: {e}")
                     images = None
+                    image_sizes = None
             else:
                 images = None
+                image_sizes = None
             
-            # Token化提示詞
-            if self.tokenizer:
-                try:
-                    # 處理圖像標記
-                    replace_token = DEFAULT_IMAGE_TOKEN
-                    if hasattr(self.model.config, 'mm_use_im_start_end') and self.model.config.mm_use_im_start_end:
-                        replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
-                    
-                    if DEFAULT_IMAGE_TOKEN in prompt:
-                        prompt = prompt.replace(DEFAULT_IMAGE_TOKEN, replace_token)
-                    
-                    # Token化
-                    input_ids = tokenizer_image_token(
-                        prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt'
-                    ).unsqueeze(0).to(self.device)
-                    
-                    # 生成
-                    with torch.inference_mode():
-                        generate_kwargs = {
-                            'input_ids': input_ids,
-                            'do_sample': False,
-                            'temperature': 0.1,
-                            'max_new_tokens': 64,
-                            'use_cache': True,
-                        }
-                        
-                        if images is not None:
-                            generate_kwargs['images'] = images
-                        
-                        output_ids = self.model.generate(**generate_kwargs)
-                    
-                    # 解碼輸出
-                    input_token_len = input_ids.shape[1]
-                    generated_ids = output_ids[0][input_token_len:]
-                    generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-                    
-                    print(f"Causal model generated: {generated_text}")
-                    
-                    # 解析座標
-                    return self.parse_coordinates(generated_text, image_shape, prompt)
-                    
-                except Exception as e:
-                    print(f"Causal generation error: {e}")
+            # 使用 LLaVA 的 tokenizer_image_token 函數
+            try:
+                # 使用動態的 image token index
+                if self.tokenizer and DEFAULT_IMAGE_TOKEN in self.tokenizer.get_vocab():
+                    current_image_token_index = self.tokenizer.convert_tokens_to_ids(DEFAULT_IMAGE_TOKEN)
+                else:
+                    current_image_token_index = IMAGE_TOKEN_INDEX
+                
+                input_ids = tokenizer_image_token(prompt, self.tokenizer, current_image_token_index, return_tensors='pt').unsqueeze(0).to(self.device)
+                print(f"Input IDs shape: {input_ids.shape}, sample: {input_ids[0][:10]}")
+                print(f"Using image token index: {current_image_token_index}")
+                
+                # 檢查 input_ids 是否有效
+                if input_ids is None or input_ids.numel() == 0:
+                    print("Error: Empty input_ids generated")
                     return self.simulate_detection(prompt.split()[-1], image_shape)
-            else:
+                
+                # 計算最大新token數
+                max_context_length = getattr(self.model.config, 'max_position_embeddings', 2048)
+                max_new_tokens = min(256, max_context_length - input_ids.shape[-1])
+                
+                if max_new_tokens < 1:
+                    print("Error: Context too long")
+                    return self.simulate_detection(prompt.split()[-1], image_shape)
+                
+                # 生成參數
+                generate_kwargs = {
+                    'inputs': input_ids,
+                    'do_sample': False,
+                    'temperature': 0.1,
+                    'max_new_tokens': max_new_tokens,
+                    'use_cache': True,
+                }
+                
+                # 添加圖像參數
+                if images is not None:
+                    generate_kwargs['images'] = images
+                    if image_sizes is not None:
+                        generate_kwargs['image_sizes'] = image_sizes
+                
+                # 執行生成
+                with torch.inference_mode():
+                    output_ids = self.model.generate(**generate_kwargs)
+                
+                # 解碼生成的文本
+                input_token_len = input_ids.shape[1]
+                generated_ids = output_ids[0][input_token_len:]
+                generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+                
+                print(f"Causal model generated: {generated_text}")
+                
+                # 解析座標
+                return self.parse_coordinates(generated_text, image_shape, prompt)
+                
+            except Exception as e:
+                print(f"Causal generation error: {e}")
+                import traceback
+                traceback.print_exc()
                 return self.simulate_detection(prompt.split()[-1], image_shape)
                 
         except Exception as e:
             print(f"Causal model error: {e}")
+            import traceback
+            traceback.print_exc()
             return self.simulate_detection(prompt.split()[-1], image_shape)
     
     def parse_coordinates(self, generated_text, image_shape, prompt):

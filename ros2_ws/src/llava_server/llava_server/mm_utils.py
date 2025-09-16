@@ -100,30 +100,97 @@ def process_images(images, image_processor, model_config):
 
 def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):
     """
-    Tokenize prompt with image tokens
+    Tokenize prompt with image tokens - improved version
     """
-    prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split('<image>')]
-    
-    def insert_separator(X, sep):
-        return [ele for sublist in zip(X, [sep]*len(X)) for ele in sublist][:-1]
-    
-    input_ids = []
-    offset = 0
-    if len(prompt_chunks) > 0 and len(prompt_chunks[0]) > 0 and prompt_chunks[0][0] == tokenizer.bos_token_id:
-        offset = 1
-        input_ids.append(prompt_chunks[0][0])
-    
-    for x in insert_separator(prompt_chunks, [image_token_index] * (offset + 1)):
-        input_ids.extend(x[offset:])
-    
-    if return_tensors is not None:
+    if prompt is None or tokenizer is None:
+        print("Warning: prompt or tokenizer is None")
+        fallback_ids = [1]  # Use ID 1 as fallback
         if return_tensors == 'pt':
-            return torch.tensor(input_ids, dtype=torch.long)
-        elif return_tensors == 'np':
-            return np.array(input_ids)
-        raise ValueError(f"Unsupported tensor type: {return_tensors}")
+            return torch.tensor(fallback_ids, dtype=torch.long)
+        return fallback_ids
     
-    return input_ids
+    try:
+        # 更安全的 tokenization 方法
+        if '<image>' not in prompt:
+            # 沒有圖像標記，直接 tokenize
+            tokens = tokenizer(prompt, return_tensors=return_tensors, add_special_tokens=True)
+            if return_tensors == 'pt':
+                return tokens.input_ids[0]
+            return tokens.input_ids
+        
+        # 分割 prompt
+        prompt_chunks = prompt.split('<image>')
+        
+        # Tokenize 每個部分
+        input_ids = []
+        
+        for i, chunk in enumerate(prompt_chunks):
+            if chunk.strip():  # 非空塊
+                chunk_tokens = tokenizer(chunk, add_special_tokens=(i == 0))
+                if hasattr(chunk_tokens, 'input_ids'):
+                    chunk_ids = chunk_tokens.input_ids
+                else:
+                    chunk_ids = chunk_tokens
+                
+                # 確保是列表
+                if not isinstance(chunk_ids, list):
+                    chunk_ids = chunk_ids.tolist() if hasattr(chunk_ids, 'tolist') else [chunk_ids]
+                
+                # 過濾 None 值
+                chunk_ids = [id for id in chunk_ids if id is not None and isinstance(id, int)]
+                input_ids.extend(chunk_ids)
+            
+            # 在塊之間添加圖像標記（除了最後一塊）
+            if i < len(prompt_chunks) - 1:
+                input_ids.append(image_token_index)
+        
+        # 確保 input_ids 不為空
+        if not input_ids:
+            print("Warning: Empty input_ids after tokenization")
+            input_ids = [tokenizer.bos_token_id if tokenizer.bos_token_id is not None else 1]
+        
+        # 驗證所有 ID 都是有效的整數
+        valid_ids = []
+        for id in input_ids:
+            if isinstance(id, int):
+                valid_ids.append(id)
+            else:
+                print(f"Warning: Invalid token ID {id}, replacing with UNK")
+                valid_ids.append(tokenizer.unk_token_id if tokenizer.unk_token_id is not None else 1)
+        
+        input_ids = valid_ids
+        
+        if return_tensors is not None:
+            if return_tensors == 'pt':
+                return torch.tensor(input_ids, dtype=torch.long)
+            elif return_tensors == 'np':
+                return np.array(input_ids)
+            else:
+                raise ValueError(f"Unsupported tensor type: {return_tensors}")
+        
+        return input_ids
+        
+    except Exception as e:
+        print(f"Error in tokenizer_image_token: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Return a robust fallback token sequence
+        try:
+            fallback_prompt = prompt.replace('<image>', '[IMG]') if prompt else "Hello"
+            fallback_tokens = tokenizer(fallback_prompt, add_special_tokens=True)
+            if hasattr(fallback_tokens, 'input_ids'):
+                fallback_ids = fallback_tokens.input_ids
+                if not isinstance(fallback_ids, list):
+                    fallback_ids = fallback_ids.tolist()
+            else:
+                fallback_ids = [1]
+        except:
+            fallback_ids = [1]
+        
+        if return_tensors == 'pt':
+            return torch.tensor(fallback_ids, dtype=torch.long)
+        return fallback_ids
 
 def expand2square(pil_img, background_color):
     """Expand image to square"""
