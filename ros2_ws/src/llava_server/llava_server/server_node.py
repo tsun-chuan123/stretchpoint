@@ -17,6 +17,7 @@ import argparse
 import base64
 import io
 import requests
+import re
 from PIL import Image as PILImage
 import torch
 from typing import Optional, Dict, Any, List
@@ -82,10 +83,58 @@ except ImportError:
     from mm_utils import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
 
+def safe_model_generate(model, tokenizer, input_ids=None, **kwargs):
+    """
+    安全的模型生成函數，處理不同版本的 transformers 兼容性問題
+    Based on RoboPoint implementation with proper parameter handling
+    """
+    try:
+        # 檢查輸入參數 - 對於常規生成使用 input_ids
+        input_tensor = input_ids
+        if input_tensor is not None:
+            # 確保 input_ids 是有效的張量
+            if not isinstance(input_tensor, torch.Tensor):
+                raise ValueError(f"input_ids must be a tensor, got {type(input_tensor)}")
+            if input_tensor.numel() == 0:
+                raise ValueError("input_ids is empty")
+            # 檢查是否包含無效值
+            if torch.any(torch.isnan(input_tensor.float())):
+                raise ValueError("input_ids contains NaN values")
+            # 檢查是否有超出詞彙表範圍的 token
+            if hasattr(tokenizer, 'vocab_size') and torch.any(input_tensor >= tokenizer.vocab_size):
+                print(f"Warning: input_ids contains tokens beyond vocab size")
+        
+        # 直接調用 - 基於 RoboPoint 的方法
+        return model.generate(input_ids, **kwargs)
+        
+    except TypeError as e:
+        if 'cache_position' in str(e):
+            print("Detected cache_position error, removing problematic parameters...")
+            # 創建清理過的參數副本
+            clean_kwargs = kwargs.copy()
+            
+            # 移除可能導致問題的參數
+            problematic_params = ['cache_position', 'position_ids', 'attention_mask']
+            for param in problematic_params:
+                if param in clean_kwargs:
+                    print(f"Removing {param}")
+                    del clean_kwargs[param]
+            
+            return model.generate(input_ids, **clean_kwargs)
+        else:
+            print(f"Generate error: {e}")
+            raise e
+    except Exception as e:
+        print(f"Unexpected error in safe_model_generate: {e}")
+        print(f"kwargs keys: {list(kwargs.keys())}")
+        if input_ids is not None:
+            print(f"input_ids type: {type(input_ids)}")
+            print(f"input_ids shape: {input_ids.shape if hasattr(input_ids, 'shape') else 'No shape'}")
+        raise e
 class LLaVAModelWorker:
     """
     Model worker for multimodal LLaVA models using Transformers
-    Similar to robopoint_worker design but simplified for object detection
+    Based on RoboPoint design for object detection with coordinate output
     """
     def __init__(self, model_type="transformers", model_path="wentao-yuan/robopoint-v1-vicuna-v1.5-13b", device="cuda"):
         self.model_type = model_type
@@ -103,8 +152,36 @@ class LLaVAModelWorker:
         self.load_model()
         
     def load_model(self):
-        """載入模型 - 支援多種後端"""
+        """載入模型 - 基於 RoboPoint 實現"""
         try:
+            print(f"Loading model from {self.model_path}")
+            
+            # 使用 RoboPoint-style 的模型載入器
+            self.tokenizer, self.model, self.image_processor, self.context_len = load_pretrained_model(
+                model_path=self.model_path,
+                model_base=None,
+                model_name=None,
+                load_8bit=False,
+                load_4bit=False,
+                device_map="auto",
+                device=self.device,
+                use_flash_attn=False
+            )
+            
+            if self.model is not None:
+                self.model_loaded = True
+                print(f"Model loaded successfully: {type(self.model)}")
+                print(f"Tokenizer vocab size: {len(self.tokenizer) if self.tokenizer else 'Unknown'}")
+                print(f"Context length: {self.context_len}")
+            else:
+                print("Failed to load model")
+                self.model_loaded = False
+                
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            import traceback
+            traceback.print_exc()
+            self.model_loaded = False
             if self.model_type == "transformers":
                 self.load_transformers_model()
             elif self.model_type == "ollama":
@@ -291,10 +368,12 @@ ASSISTANT: Looking at the image, I can see the {prompt}. The coordinates are: ""
             
             # 生成
             with torch.inference_mode():
-                generate_ids = self.model.generate(
+                generate_ids = safe_model_generate(
+                    self.model, self.tokenizer,
                     **inputs,
                     max_new_tokens=50,
-                    do_sample=False
+                    do_sample=False,
+                    pad_token_id=self.tokenizer.eos_token_id
                 )
             
             # 解碼
@@ -312,7 +391,7 @@ ASSISTANT: Looking at the image, I can see the {prompt}. The coordinates are: ""
             return self.simulate_detection(prompt.split()[-1], image_shape)
     
     def generate_with_causal_model(self, img_pil, prompt, image_shape):
-        """使用 AutoModelForCausalLM 生成（如 robopoint 模型）"""
+        """使用 AutoModelForCausalLM 生成（如 robopoint 模型）- 基於 RoboPoint 實現"""
         try:
             # 確保提示詞包含圖像標記
             if DEFAULT_IMAGE_TOKEN not in prompt:
@@ -321,7 +400,7 @@ ASSISTANT: Looking at the image, I can see the {prompt}. The coordinates are: ""
             
             print(f"Processing prompt: {prompt[:100]}...")
             
-            # 處理圖像 - 基於 LLaVA model_worker.py 的實現
+            # 處理圖像 - 基於 RoboPoint 的實現
             if self.image_processor:
                 try:
                     # 檢查是否需要特殊處理圖像標記
@@ -330,7 +409,7 @@ ASSISTANT: Looking at the image, I can see the {prompt}. The coordinates are: ""
                         replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
                     prompt = prompt.replace(DEFAULT_IMAGE_TOKEN, replace_token)
                     
-                    # 處理圖像為tensor
+                    # 處理圖像為tensor - 使用 RoboPoint 的 process_images
                     image_sizes = [img_pil.size]
                     images = process_images([img_pil], self.image_processor, self.model.config)
                     
@@ -347,7 +426,7 @@ ASSISTANT: Looking at the image, I can see the {prompt}. The coordinates are: ""
                 images = None
                 image_sizes = None
             
-            # 使用 LLaVA 的 tokenizer_image_token 函數
+            # 使用 RoboPoint 的 tokenizer_image_token 函數
             try:
                 # 使用動態的 image token index
                 if self.tokenizer and DEFAULT_IMAGE_TOKEN in self.tokenizer.get_vocab():
@@ -355,7 +434,20 @@ ASSISTANT: Looking at the image, I can see the {prompt}. The coordinates are: ""
                 else:
                     current_image_token_index = IMAGE_TOKEN_INDEX
                 
-                input_ids = tokenizer_image_token(prompt, self.tokenizer, current_image_token_index, return_tensors='pt').unsqueeze(0).to(self.device)
+                # 檢查 prompt 是否有效
+                if not prompt or len(prompt.strip()) == 0:
+                    print("Error: Empty prompt")
+                    return self.simulate_detection("target object", image_shape)
+                
+                # 使用 RoboPoint 的 tokenizer_image_token 進行 tokenization
+                input_ids = tokenizer_image_token(prompt, self.tokenizer, current_image_token_index, return_tensors='pt')
+                
+                # 確保 input_ids 是正確的形狀
+                if input_ids.dim() == 1:
+                    input_ids = input_ids.unsqueeze(0)
+                
+                input_ids = input_ids.to(self.device)
+                
                 print(f"Input IDs shape: {input_ids.shape}, sample: {input_ids[0][:10]}")
                 print(f"Using image token index: {current_image_token_index}")
                 
@@ -372,13 +464,12 @@ ASSISTANT: Looking at the image, I can see the {prompt}. The coordinates are: ""
                     print("Error: Context too long")
                     return self.simulate_detection(prompt.split()[-1], image_shape)
                 
-                # 生成參數
+                # 生成參數 - 基於 RoboPoint 的設定
                 generate_kwargs = {
-                    'inputs': input_ids,
-                    'do_sample': False,
-                    'temperature': 0.1,
+                    'do_sample': False,  # 使用貪婪生成以確保一致性
                     'max_new_tokens': max_new_tokens,
                     'use_cache': True,
+                    'pad_token_id': self.tokenizer.eos_token_id if self.tokenizer.eos_token_id is not None else 2,
                 }
                 
                 # 添加圖像參數
@@ -387,19 +478,22 @@ ASSISTANT: Looking at the image, I can see the {prompt}. The coordinates are: ""
                     if image_sizes is not None:
                         generate_kwargs['image_sizes'] = image_sizes
                 
-                # 執行生成
+                # 執行生成 - 基於 RoboPoint 的實現
                 with torch.inference_mode():
-                    output_ids = self.model.generate(**generate_kwargs)
+                    output_ids = self.model.generate(
+                        input_ids,
+                        **generate_kwargs
+                    )
                 
-                # 解碼生成的文本
+                # 解碼生成的文本 - 基於 RoboPoint 的實現
                 input_token_len = input_ids.shape[1]
                 generated_ids = output_ids[0][input_token_len:]
                 generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
                 
                 print(f"Causal model generated: {generated_text}")
                 
-                # 解析座標
-                return self.parse_coordinates(generated_text, image_shape, prompt)
+                # 解析座標 - 使用改進的解析函數
+                return self.parse_coordinates_robust(generated_text, image_shape, prompt)
                 
             except Exception as e:
                 print(f"Causal generation error: {e}")
@@ -413,74 +507,118 @@ ASSISTANT: Looking at the image, I can see the {prompt}. The coordinates are: ""
             traceback.print_exc()
             return self.simulate_detection(prompt.split()[-1], image_shape)
     
-    def parse_coordinates(self, generated_text, image_shape, prompt):
-        """解析生成的座標文字"""
+    def parse_coordinates_robust(self, generated_text, image_shape, prompt):
+        """解析生成的座標文字 - 改進版本基於 RoboPoint"""
         try:
             height, width = image_shape
             
-            # 尋找座標模式: [(x, y)] 或 (x, y) 或 x, y
-            import re
+            # 多種座標模式匹配，基於 RoboPoint 的方法
+            patterns = [
+                r'\[(\d+\.?\d*),\s*(\d+\.?\d*)\]',  # [x, y]
+                r'\((\d+\.?\d*),\s*(\d+\.?\d*)\)',  # (x, y)
+                r'(\d+\.?\d*),\s*(\d+\.?\d*)',      # x, y
+                r'x[:\s]*(\d+\.?\d*).*?y[:\s]*(\d+\.?\d*)',  # x: 123 y: 456
+                r'center[:\s]*\(?(\d+\.?\d*),\s*(\d+\.?\d*)\)?',  # center: (x, y)
+                r'point[:\s]*\(?(\d+\.?\d*),\s*(\d+\.?\d*)\)?',   # point: (x, y)
+            ]
             
-            # 模式1: [(x, y), (x2, y2), ...]
-            coord_pattern1 = r'\[\s*\((\d+),\s*(\d+)\)\s*(?:,\s*\((\d+),\s*(\d+)\))?\s*\]'
-            match1 = re.search(coord_pattern1, generated_text)
+            for pattern in patterns:
+                matches = re.findall(pattern, generated_text, re.IGNORECASE)
+                if matches:
+                    try:
+                        x, y = float(matches[0][0]), float(matches[0][1])
+                        
+                        # 判斷座標格式：絕對座標 vs 相對座標
+                        if x <= 1.0 and y <= 1.0:
+                            # 相對座標 (0-1 範圍)
+                            center_px = [int(x * width), int(y * height)]
+                        else:
+                            # 絕對座標
+                            center_px = [int(x), int(y)]
+                        
+                        # 確保座標在圖像範圍內
+                        center_px[0] = max(0, min(center_px[0], width - 1))
+                        center_px[1] = max(0, min(center_px[1], height - 1))
+                        
+                        # 生成邊界框 - 基於 RoboPoint 的方法
+                        bbox_size = min(80, min(width, height) // 4)
+                        bbox = [
+                            max(0, center_px[0] - bbox_size // 2),
+                            max(0, center_px[1] - bbox_size // 2),
+                            bbox_size,
+                            bbox_size
+                        ]
+                        
+                        result = {
+                            'center_px': center_px,
+                            'bbox': bbox,
+                            'confidence': 0.8,  # 較高信心度因為解析成功
+                            'description': f'Detected from: {generated_text[:50]}...'
+                        }
+                        
+                        print(f"Successfully parsed coordinates: {center_px}")
+                        return result
+                        
+                    except ValueError as e:
+                        print(f"Error converting coordinates: {e}")
+                        continue
             
-            if match1:
-                x, y = int(match1.group(1)), int(match1.group(2))
-                x = max(0, min(width-1, x))
-                y = max(0, min(height-1, y))
-                
-                return {
-                    'center_px': [x, y],
-                    'bbox': [max(0, x-30), max(0, y-30), 60, 60],
-                    'confidence': 0.85,
-                    'description': f'target from model: {prompt}'
-                }
-            
-            # 模式2: (x, y)
-            coord_pattern2 = r'\((\d+),\s*(\d+)\)'
-            match2 = re.search(coord_pattern2, generated_text)
-            
-            if match2:
-                x, y = int(match2.group(1)), int(match2.group(2))
-                x = max(0, min(width-1, x))
-                y = max(0, min(height-1, y))
-                
-                return {
-                    'center_px': [x, y],
-                    'bbox': [max(0, x-30), max(0, y-30), 60, 60],
-                    'confidence': 0.80,
-                    'description': f'target from model: {prompt}'
-                }
-            
-            # 模式3: 數字對 x, y 或 x y
-            number_pattern = r'(\d+)[,\s]+(\d+)'
-            match3 = re.search(number_pattern, generated_text)
-            
-            if match3:
-                x, y = int(match3.group(1)), int(match3.group(2))
-                x = max(0, min(width-1, x))
-                y = max(0, min(height-1, y))
-                
-                return {
-                    'center_px': [x, y],
-                    'bbox': [max(0, x-30), max(0, y-30), 60, 60],
-                    'confidence': 0.75,
-                    'description': f'target from model: {prompt}'
-                }
-            
-            # 如果找不到座標，使用中心點
-            print(f"Could not parse coordinates from: {generated_text}")
-            return {
-                'center_px': [width//2, height//2],
-                'bbox': [width//2-30, height//2-30, 60, 60],
-                'confidence': 0.60,
-                'description': f'fallback center: {prompt}'
-            }
+            # 如果所有模式都失敗，嘗試從提示詞推斷
+            return self.infer_from_prompt(prompt, image_shape, generated_text)
             
         except Exception as e:
-            print(f"Coordinate parsing error: {e}")
-            return self.simulate_detection(prompt, image_shape)
+            print(f"Error in coordinate parsing: {e}")
+            return self.simulate_detection("target object", image_shape)
+    
+    def infer_from_prompt(self, prompt, image_shape, generated_text):
+        """從提示詞推斷可能的位置"""
+        height, width = image_shape
+        
+        # 位置關鍵詞映射
+        position_map = {
+            'center': (0.5, 0.5),
+            'middle': (0.5, 0.5),
+            'left': (0.2, 0.5),
+            'right': (0.8, 0.5),
+            'top': (0.5, 0.2),
+            'bottom': (0.5, 0.8),
+            'corner': (0.1, 0.1),
+            'edge': (0.9, 0.5),
+        }
+        
+        # 在提示詞和生成文字中尋找位置關鍵詞
+        text_to_search = (prompt + " " + generated_text).lower()
+        
+        for keyword, (rel_x, rel_y) in position_map.items():
+            if keyword in text_to_search:
+                center_px = [int(rel_x * width), int(rel_y * height)]
+                bbox_size = min(60, min(width, height) // 4)
+                bbox = [
+                    max(0, center_px[0] - bbox_size // 2),
+                    max(0, center_px[1] - bbox_size // 2),
+                    bbox_size,
+                    bbox_size
+                ]
+                
+                return {
+                    'center_px': center_px,
+                    'bbox': bbox,
+                    'confidence': 0.6,
+                    'description': f'Inferred from keyword: {keyword}'
+                }
+        
+        # 最後的後備：圖像中心
+        return self.simulate_detection("center object", image_shape)
+    
+    def simulate_detection(self, target_name, image_shape):
+        """模擬檢測結果"""
+        height, width = image_shape
+        return {
+            'center_px': [width//2, height//2],
+            'bbox': [width//2-40, height//2-40, 80, 80],
+            'confidence': 0.6,
+            'description': f'simulated detection: {target_name}'
+        }
     
     def detect_object_with_ollama(self, image, prompt):
         """使用 Ollama 進行物件檢測"""

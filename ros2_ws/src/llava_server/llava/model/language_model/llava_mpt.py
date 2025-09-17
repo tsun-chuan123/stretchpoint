@@ -68,7 +68,9 @@ class LlavaMptForCausalLM(MptForCausalLM, LlavaMetaForCausalLM):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        images=None):
+        images=None,
+        cache_position: Optional[torch.LongTensor] = None,  # Add for compatibility with newer transformers
+        **kwargs):  # Add kwargs to catch any other unexpected parameters
 
         input_ids, attention_mask, past_key_values, inputs_embeds, labels = self.prepare_inputs_labels_for_multimodal(input_ids, attention_mask, past_key_values, labels, images)
         
@@ -82,6 +84,7 @@ class LlavaMptForCausalLM(MptForCausalLM, LlavaMetaForCausalLM):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            cache_position=cache_position,  # Pass cache_position to parent if supported
         )
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
